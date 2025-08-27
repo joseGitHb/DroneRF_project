@@ -8,7 +8,7 @@ import warnings
 import numpy as np
 
 
-def createDataBase(rootPath, numSignals, opts, tableFormat):
+def createDataBase(rootPath, numSignals, opts, tableFormat, start_file):
     """
         Crea una base de datos a partir de los archivos .mat
 
@@ -29,7 +29,7 @@ def createDataBase(rootPath, numSignals, opts, tableFormat):
 
     for folder in folders:
         files = [file for file in folder.iterdir()]
-        for mat_file in files[:numSignals]:
+        for mat_file in files[start_file:start_file+numSignals]:
             try:                   
                 dron = DronRC(str(mat_file), opts)
                 drone_objs.append(dron)        
