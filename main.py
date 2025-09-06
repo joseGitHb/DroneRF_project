@@ -5,176 +5,205 @@ import matplotlib.pyplot as plt
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import cross_val_score, RandomizedSearchCV
+from sklearn.model_selection import cross_val_predict
 import joblib
 #%%
 rootPath = r"E:\DataBase\MPACT_DroneRC_RF_Dataset"
-numSignals=30
+numSignals=150
+start_file = 600
 opts = 'IncludeFeatures'
 tableFormat=True
-dataBase = createDataBase(rootPath, numSignals, opts, tableFormat)
-dataBase.to_csv(r"C:\Users\joset\DroneRF_project\dataBase.csv", index=False)
 #%%
-data = pd.read_csv(r"C:\Users\joset\DroneRF_project\dataBase300.csv")
-
+dataBase0_150 = createDataBase(rootPath, numSignals, opts, tableFormat, start_file)
+dataBase0_150.to_csv(r"C:\Users\joset\DroneRF_project\dataBase0_150.csv", index=False)
+#%%
+data0_150 = pd.read_csv(r"C:\Users\joset\DroneRF_project\dataBase0_150.csv")
+#%%
+dataBase150_300 = createDataBase(rootPath, numSignals, opts, tableFormat, start_file)
+dataBase150_300.to_csv(r"C:\Users\joset\DroneRF_project\dataBase150_300.csv", index=False)
+#%%
+data150_300 = pd.read_csv(r"C:\Users\joset\DroneRF_project\dataBase150_300.csv")
+#%%
+dataBase300_450 = createDataBase(rootPath, numSignals, opts, tableFormat, start_file)
+dataBase300_450.to_csv(r"C:\Users\joset\DroneRF_project\dataBase300_450.csv", index=False)
+#%%
+data300_450 = pd.read_csv(r"C:\Users\joset\DroneRF_project\dataBase300_450.csv")
+#%%
+dataBase450_600 = createDataBase(rootPath, numSignals, opts, tableFormat, start_file)
+dataBase450_600.to_csv(r"C:\Users\joset\DroneRF_project\dataBase450_600.csv", index=False)
+#%%
+data450_600 = pd.read_csv(r"C:\Users\joset\DroneRF_project\dataBase450_600.csv")
+#%%
+dataBase600_700 = createDataBase(rootPath, numSignals, opts, tableFormat, start_file)
+dataBase600_700.to_csv(r"C:\Users\joset\DroneRF_project\dataBase600_700.csv", index=False)
+#%%
+data600_700 = pd.read_csv(r"C:\Users\joset\DroneRF_project\dataBase600_700.csv")
+#%%
+data = pd.concat([data0_150, data150_300, data300_450, data450_600, data600_700], ignore_index=True)
+#%%
+data["make_model"]=data.loc[:, "make"]+"_"+data.loc[:,"model"]
 #%%
 features = data.loc[:, "Mean":]
+features = features.drop("Entropy", axis=1)
 #%%
-train_set, test_set = train_test_split(features, test_size=0.2, random_state=42)
+train_set_full, test_set = train_test_split(features, test_size=0.2, random_state=42)
+train_set, valid_set = train_test_split(train_set_full, test_size=0.2, random_state=42)
 # %%
 # Separamos datos y etiquetas 
 x_train = train_set.drop("make_model", axis=1)
 y_train = train_set["make_model"].copy()
+x_valid = valid_set.drop("make_model", axis=1)
+y_valid = valid_set["make_model"].copy()
 #%% Feature Scaling
-std_scaler = StandardScaler()
+std_scaler = StandardScaler() # Para usar Gradient Descent
 x_train_std_scaler = std_scaler.fit_transform(x_train)
 df_x_train_std_scaler = pd.DataFrame(x_train_std_scaler, columns=x_train.columns, 
                                       index=x_train.index)
+x_valid_std_scaler = std_scaler.transform(x_valid)
+df_x_valid_std_scaler = pd.DataFrame(x_valid_std_scaler, columns=x_valid.columns, 
+                                      index=x_valid.index)
 
 #%% Select model
+#%% Bayesian Optimization for a Keras model
+#%% 
+from sklearn.preprocessing import LabelEncoder
+encoder = LabelEncoder()
+y_train_encod = encoder.fit_transform(y_train)
+y_valid_encod = encoder.transform(y_valid)
+#%% EarlySptopping
+early_stopping_cb = keras.callbacks.EarlyStopping(patience=10,
+                                                  restore_best_weights=True)
+#%% Keras Tuner
+import tensorflow as tf
+import keras_tuner as kt
 
-#%% Cross Validation
+def build_model(hp):
+    model = keras.models.Sequential()
+    model.add(keras.layers.InputLayer(shape=(13,)))
+    # Tune the number of layers.
+    for i in range(hp.Int("num_layers", 1, 3)):
+        model.add(keras.layers.Dense(
+            units=hp.Int(f"units_{i}", min_value=16, max_value=128, step=16),
+            activation="relu",
+            kernel_regularizer=keras.regularizers.l2(hp.Float(f"l2_{i}", 1e-5, 1e-2, sampling="log"))
+        ))
+    model.add(keras.layers.Dropout(hp.Float(f"dropout_{i}", 0.0, 0.5, step=0.1)))
+    model.add(keras.layers.Dense(17, activation="softmax"))
+    # Tune the learning rate for the optimizer.
+    model.compile(
+        optimizer=keras.optimizers.Adam(
+            hp.Float("learning_rate", 1e-4, 1e-2, sampling="log")),
+        loss="sparse_categorical_crossentropy",
+        metrics=["accuracy"])
+    return model
 
-#%% RandomizedSearchCV or HalvingRandomSearchCV 
+tuner = kt.BayesianOptimization(
+    build_model, objective="val_accuracy", max_trials=35, directory="keras_tuner_dir",
+    project_name="tuner_BH_3")
+
+tuner.search(df_x_train_std_scaler, y_train_encod, epochs=50,
+             validation_data=(df_x_valid_std_scaler, y_valid_encod),
+             callbacks=[early_stopping_cb])
+best_model = tuner.get_best_models(num_models=1)[0]
+best_hps = tuner.get_best_hyperparameters(num_trials=1)[0]
+print("Best hyperparameters found:")
+for hp in best_hps.values:
+    print(f"{hp}: {best_hps.get(hp)}")
+
+
+#%%
+history = best_model.fit(df_x_train_std_scaler, y_train_encod, 
+                    epochs=100, validation_data=(df_x_valid_std_scaler, y_valid_encod),
+                    callbacks=[early_stopping_cb])
+#%% Plot learning curves
+pd.DataFrame(history.history).plot(
+    figsize=(8, 5), xlim=[0, 100], ylim=[0, 1], grid=True, xlabel="Epoch",
+    style=["r--", "r--.", "b-", "b-*"])
+plt.legend(loc="lower left")  # extra code
+plt.savefig("keras_learning_curves_plot_BH")  # extra code
+
+#%% Confusion Matrix
+from sklearn.metrics import ConfusionMatrixDisplay, confusion_matrix
+y_valid_pred = best_model.predict(df_x_valid_std_scaler).argmax(axis=1)
+fig, ax = plt.subplots(figsize=(12,12))
+ConfusionMatrixDisplay.from_predictions(y_valid_encod, y_valid_pred, normalize="true",
+                                        values_format=".0%", ax=ax, xticks_rotation=45)
+plt.savefig("ConfusionMatrixKeras_BH", dpi=300, bbox_inches="tight")
+
+# %% Other metrics
+from sklearn.metrics import precision_score, recall_score, f1_score, classification_report
+
+# Macro average (treats all classes equally)
+print("Macro Precision:", precision_score(y_valid_encod, y_valid_pred, average="macro"))
+print("Macro Recall:", recall_score(y_valid_encod, y_valid_pred, average="macro"))
+print("Macro F1-score:", f1_score(y_valid_encod, y_valid_pred, average="macro"))
+
+# Weighted average (accounts for class imbalance)
+print("Weighted Precision:", precision_score(y_valid_encod, y_valid_pred, average="weighted"))
+print("Weighted Recall:", recall_score(y_valid_encod, y_valid_pred, average="weighted"))
+print("Weighted F1-score:", f1_score(y_valid_encod, y_valid_pred, average="weighted"))
+
+# Full report
+print(classification_report(y_valid_encod, y_valid_pred, digits=4))
 
 #%% Evaluate on Test Set
 x_test = test_set.drop("make_model", axis=1)
+x_test_std_scaler = std_scaler.transform(x_test)
+df_x_test_std_scaler = pd.DataFrame(x_test_std_scaler, columns=x_test.columns, 
+                                      index=x_test.index)
 y_test = test_set["make_model"].copy()
+y_test_encod = encoder.transform(y_test)
+
+test_loss, test_accuracy = best_model.evaluate(df_x_test_std_scaler, y_test_encod)
+print(f"Test accuracy: {test_accuracy:.4f}")    
+print(f"Test loss: {test_loss:.4f}")
 
 #%% 95% confidence interval
 
 #%% Save the model
-#joblib.dump(final_model, "final_model.pkl")
+best_model.save("keras_best_model.h5")
+
+#Load the model
+#model = keras.models.load_model("keras_model.h5")
 
 
 
-#%% Primero probamos un clasificador binario: "FlySky_FST6 classifier"
-# Distingue entre 2 clases: "FlySky_FST6" & "non FlySky_FST6"
-
-# Creamos el vector de etiquetas 
-y_train_FlySky_FST6 = (y_train == 'FlySky_FST6')
-y_test_FlySky_FST6 = (y_test == 'FlySky_FST6')
-# %% SGD Classifier
-from sklearn.linear_model import SGDClassifier
-sgd_clf = SGDClassifier(random_state=42)
-sgd_clf.fit(df_x_train_std_scaler, y_train_FlySky_FST6)
-
-# %%
-sgd_clf.predict([df_x_train_std_scaler.loc[1130]])
-# %% Measuring Accuracy using CrossValidation
-cross_val_score(sgd_clf, df_x_train_std_scaler, y_train_FlySky_FST6, 
-                cv=3, scoring="accuracy")
-
-# %% Dummy classifier
-from sklearn.dummy import DummyClassifier
-dummy_clf = DummyClassifier()
-dummy_clf.fit(df_x_train_std_scaler, y_train_FlySky_FST6)
-dummy_clf.predict(df_x_train_std_scaler)
-
-# %%
-cross_val_score(dummy_clf, df_x_train_std_scaler, y_train_FlySky_FST6, 
-                cv=3, scoring="accuracy")
-#%% Matriz de confusión. Mejor para evaluar el modelo
-from sklearn.model_selection import cross_val_predict
-from sklearn.metrics import confusion_matrix
-y_train_FlySky_FST6_pred = cross_val_predict(sgd_clf, df_x_train_std_scaler, 
-                                             y_train_FlySky_FST6)
-cm = confusion_matrix(y_train_FlySky_FST6, y_train_FlySky_FST6_pred)
-#%% Precision & Recall 
-from sklearn.metrics import precision_score, recall_score
-print(precision_score(y_train_FlySky_FST6, y_train_FlySky_FST6_pred))
-#%% Determinamos el umbral de decisión
-y_scores = cross_val_predict(sgd_clf, df_x_train_std_scaler, y_train_FlySky_FST6, 
-                             cv=3, method="decision_function")
-#%% Curva PR. Mejor cuando la clase negativa aparece poco
-from sklearn.metrics import precision_recall_curve
-precisions, recalls, thresholds = precision_recall_curve(y_train_FlySky_FST6, y_scores)
-
-plt.figure(figsize=(8, 4)) 
-plt.plot(thresholds, precisions[:-1], "b--", label="Precision", linewidth=2)
-plt.plot(thresholds, recalls[:-1], "g-", label="Recall", linewidth=2)
-threshold = 0
-plt.vlines(threshold, 0, 1.0, "k", "dotted", label="threshold")
-idx = (thresholds >= threshold).argmax()  # first index ≥ threshold
-plt.plot(thresholds[idx], precisions[idx], "bo")
-plt.plot(thresholds[idx], recalls[idx], "go")
-plt.axis([-3, 3, 0, 1])
-plt.grid()
-plt.xlabel("Threshold")
-plt.legend(loc="center right")
-plt.savefig("precision_recall_vs_threshold.png")
-
-# %%
-import matplotlib.patches as patches  # extra code – for the curved arrow
-plt.figure(figsize=(6, 5))  # extra code – not needed, just formatting
-plt.plot(recalls, precisions, linewidth=2, label="Precision/Recall curve")
-# extra code – just beautifies and saves Figure 3–6
-plt.plot([recalls[idx], recalls[idx]], [0., precisions[idx]], "k:")
-plt.plot([0.0, recalls[idx]], [precisions[idx], precisions[idx]], "k:")
-plt.plot([recalls[idx]], [precisions[idx]], "ko",
-         label="Point at threshold 3,000")
-plt.gca().add_patch(patches.FancyArrowPatch(
-    (0.79, 0.60), (0.61, 0.78),
-    connectionstyle="arc3,rad=.2",
-    arrowstyle="Simple, tail_width=1.5, head_width=8, head_length=10",
-    color="#444444"))
-plt.text(0.56, 0.62, "Higher\nthreshold", color="#333333")
-plt.xlabel("Recall")
-plt.ylabel("Precision")
-plt.axis([0, 1, 0, 1])
-plt.grid()
-plt.legend(loc="lower left")
-plt.savefig("precision_recall_curve.png")
-#%% ROC curve
-from sklearn.metrics import roc_curve
-fpr, tpr, thresholds = roc_curve(y_train_FlySky_FST6, y_scores)
-plt.figure(figsize=(6, 5))  # extra code – not needed, just formatting
-plt.plot(fpr, tpr, linewidth=2, label="ROC curve")
-plt.plot([0, 1], [0, 1], 'k:', label="Random classifier's ROC curve")
-plt.savefig("ROC_Curve")
-#%%  Compute Area Under the Curve (AUC)
-from sklearn.metrics import roc_auc_score
-roc_auc_score(y_train_FlySky_FST6, y_scores)
-
-#%% Ahora creamos un RandomForestClassifier para comparar
-from sklearn.ensemble import RandomForestClassifier
-forest_clf = RandomForestClassifier(random_state=42)
-y_probas_forest = cross_val_predict(forest_clf, df_x_train_std_scaler, y_train_FlySky_FST6, 
-                                    cv=3, method="predict_proba")
-y_scores_forest = y_probas_forest[:, 1]
-precisions_forest, recalls_forest, thresholds_forest = precision_recall_curve(y_train_FlySky_FST6, y_scores_forest)
-plt.figure(figsize=(6, 5))  # extra code – not needed, just formatting
-
-plt.plot(recalls_forest, precisions_forest, "b-", linewidth=2,
-         label="Random Forest")
-plt.plot(recalls, precisions, "--", linewidth=2, label="SGD")
-
-# extra code – just beautifies and saves Figure 3–8
-plt.xlabel("Recall")
-plt.ylabel("Precision")
-plt.axis([0, 1, 0, 1])
-plt.grid()
-plt.legend(loc="lower left")
-plt.savefig("pr_curve_comparison_plot")
 #%% MULTICLASS CLASSIFICATION
 # Scickit-Learn ejecuta OvR or OvO según el algoritmo cuando se quiere 
 # ejecutar clasificación binaria para una tarea de clasificación multiclase
-from sklearn.svm import SVC
+from sklearn.svm import SVC 
+"""
+    Hiperparámetros: C
+"""
 svm_clf = SVC(random_state=42)
 svm_clf.fit(df_x_train_std_scaler, y_train)
-# %%
+
 #svm_clf.predict([df_x_train_std_scaler.loc[1000]])
-some_instance_scores = svm_clf.decision_function([df_x_train_std_scaler.loc[1000]])
+some_instance_scores = svm_clf.decision_function([df_x_train_std_scaler.iloc[300]])
 some_instance_scores.round(2)
 # %%
 svm_clf.classes_
 # %% ERROR ANALYSIS
 from sklearn.metrics import ConfusionMatrixDisplay
 y_train_pred = cross_val_predict(svm_clf, df_x_train_std_scaler, y_train, cv=3)
-#%%
-ConfusionMatrixDisplay.from_predictions(y_train, y_train_pred)
-plt.savefig("ConfusionMatrixSVM")
-#%%
-ConfusionMatrixDisplay.from_predictions(y_train, y_train_pred, normalize="true", values_format=".0%")
-plt.savefig("ConfusionMatrixSVM_normalize")
+#%% Matriz de confusión
+fig, ax = plt.subplots(figsize=(10,10))
+ConfusionMatrixDisplay.from_predictions(y_train, y_train_pred, ax=ax)
+plt.savefig("ConfusionMatrixSVM" , dpi=300, bbox_inches="tight")
+#%% Matriz de confusión normalizada
+fig, ax = plt.subplots(figsize=(12,12))
+ConfusionMatrixDisplay.from_predictions(y_train, y_train_pred, 
+                                        normalize="true", values_format=".0%",
+                                         ax=ax, xticks_rotation=45)
+plt.savefig("ConfusionMatrixSVM_normalize", dpi=300, bbox_inches="tight")
 
+# %% Le asignamos peso 0 a las predicciones correctas para ver mejor los errores
+sample_weight = (y_train_pred != y_train)
+fig, ax = plt.subplots(figsize=(12,12))
+plt.rc('font', size=10)  # extra code
+ConfusionMatrixDisplay.from_predictions(y_train, y_train_pred,
+                                        sample_weight=sample_weight,
+                                        normalize="true", values_format=".0%",
+                                        ax=ax, xticks_rotation=45)
+plt.savefig("Errors normalized by row", dpi=300, bbox_inches="tight")
 # %%
